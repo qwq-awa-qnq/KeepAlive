@@ -480,6 +480,7 @@ namespace KeepAliveTool
             BuildCenter(root);
             BuildTray();
             RefreshTitle();
+            if (_neko) ApplyCatTexts();   // 上次开着猫娘模式 → 启动即全界面带猫味
 
             if (_silent)
             {
@@ -529,9 +530,10 @@ namespace KeepAliveTool
             bs[1].Click += delegate { DeleteSelected(); };
             bs[2].Click += delegate { _mgr.StartAll(); SaveAll(); RefreshList(); };
             bs[3].Click += delegate { _mgr.StopAll(); RefreshList(); };
-            bs[4].Click += delegate { SaveAll(); _mgr.Notify("设置已保存"); };
+            bs[4].Click += delegate { ApplyAndSave(); };
             bs[5].Click += delegate { OpenLog(); };
             bs[6].Click += delegate { HideToTray(); };
+            foreach (Button b in bs) { b.Tag = b.Text; _catButtons.Add(b); }
 
             // 猫娘模式开关：极低调小字，点击切换
             _lblNeko = new Label
@@ -566,6 +568,7 @@ namespace KeepAliveTool
             _lblNeko.Text = NekoStateText();
             PlaceNeko();
             RefreshTitle();
+            ApplyCatTexts();
             _store.NekoMode = _neko;
             _store.Save(_cfgPath);
             if (_tray != null)
@@ -578,6 +581,24 @@ namespace KeepAliveTool
         private string Neko(string s)
         {
             return _neko ? s + " (=^･ω･^=)" : s;
+        }
+        private string CatUi(string s)
+        {
+            return _neko ? s + " 喵~" : s;
+        }
+        // 把猫娘模式应用到可加字的地方（按钮/托盘提示/状态等）
+        private void ApplyCatTexts()
+        {
+            string suf = _neko ? " 喵~" : "";
+            foreach (Button b in _catButtons)
+                if (b != null && !b.IsDisposed && b.Tag is string)
+                    b.Text = (string)b.Tag + suf;
+            if (_tray != null)
+                _tray.Text = _neko ? "Keep-Alive 保活看门狗 (=^･ω･^=)" : "Keep-Alive 保活看门狗";
+            foreach (KeyValuePair<MonitorItem, NotifyIcon> kv in _itemTrays)
+                try { kv.Value.Text = kv.Key.DisplayName + (_neko ? "（已隐藏(=^･ω･^=)，点击显示）" : "（已隐藏，点击显示窗口）"); }
+                catch { }
+            RefreshList();
         }
 
         // ---------------- 中部：列表 + 编辑 ----------------
@@ -644,6 +665,7 @@ namespace KeepAliveTool
             _grid.Columns.Add(lastCol);
 
             _grid.SelectionChanged += delegate { EditLoadSelected(); };
+            _grid.Leave += delegate { if (!_grid.IsDisposed) _grid.ClearSelection(); };  // 点到别处：取消选中高亮
             _grid.CellDoubleClick += delegate(object s, DataGridViewCellEventArgs e)
             {
                 if (e.RowIndex < 0) return;
@@ -777,6 +799,45 @@ namespace KeepAliveTool
             Panel r11 = NewRow(flp, 30);
             Label tip2 = new Label { Text = "提示：首列勾选 = 隐藏到托盘运行；双击行 = 启停", ForeColor = TextSub, Location = new Point(4, 6), AutoSize = true };
             r11.Controls.Add(tip2);
+
+            // 编辑即自动保存（防抖）
+            WireAutoSave(_tTarget); WireAutoSave(_tArgs); WireAutoSave(_tWork); WireAutoSave(_tProc); WireAutoSave(_tPattern);
+            _nInterval.ValueChanged += delegate { FieldChanged(); };
+            _nMaxCrash.ValueChanged += delegate { FieldChanged(); };
+            _nBackoff.ValueChanged += delegate { FieldChanged(); };
+            _chkMin.CheckedChanged += delegate { FieldChanged(); };
+            _chkBoot.CheckedChanged += delegate { FieldChanged(); };
+            _chkHideWin.CheckedChanged += delegate { FieldChanged(); };
+        }
+
+        private void WireAutoSave(TextBox t)
+        {
+            if (t == null) return;
+            t.TextChanged += delegate { FieldChanged(); };
+        }
+        private void FieldChanged()
+        {
+            if (_loadingEdit || _sel == null) return;
+            if (_saveTimer == null)
+            {
+                _saveTimer = new System.Windows.Forms.Timer { Interval = 800 };
+                _saveTimer.Tick += delegate { _saveTimer.Stop(); AutoSaveNow(); };
+            }
+            _saveTimer.Stop();
+            _saveTimer.Start();
+        }
+        private void AutoSaveNow()
+        {
+            if (_sel == null) return;
+            string tp = _tTarget.Text.Trim();
+            // 仅当正在编辑的就是选中项（目标路径一致）才自动保存；否则视为在准备新增，等 + 添加监控
+            if (string.IsNullOrEmpty(tp) || !string.Equals(tp, _sel.Target, StringComparison.OrdinalIgnoreCase)) return;
+            MonitorItem src = ReadEditFields();
+            CopyTo(_sel, src);
+            SaveAll();
+            // 更新当前行显示（进程匹配列可能随特征变化）
+            for (int i = 0; i < _grid.Rows.Count; i++)
+                if (_grid.Rows[i].Tag == _sel) { SyncRow(i); break; }
         }
 
         private static Panel NewRow(FlowLayoutPanel f, int h)
@@ -880,6 +941,8 @@ namespace KeepAliveTool
             };
             _btnDelLog = btnDelLog;
             btnDelLog.Click += delegate { DeleteLog(); };
+            btnDelLog.Tag = btnDelLog.Text;
+            _catButtons.Add(btnDelLog);
             bot.Controls.Add(btnDelLog);
             bot.Resize += delegate { PlaceLogBtn(); };
             bot.Layout += delegate { PlaceLogBtn(); };
@@ -947,6 +1010,9 @@ namespace KeepAliveTool
         }
         private bool _forceExit;
         private bool _allowShow;   // 静默模式：仅当用户从托盘要求显示时才允许窗口可见
+        private bool _syncingSel;  // 程序性恢复选中（避免覆盖右栏输入）
+        private System.Windows.Forms.Timer _saveTimer;   // 编辑自动保存防抖
+        private readonly List<Button> _catButtons = new List<Button>();  // 猫娘模式要改字的按钮
 
         protected override void SetVisibleCore(bool value)
         {
@@ -1069,6 +1135,9 @@ namespace KeepAliveTool
             SaveAll();
             RefreshList();
             SelectItem(_sel);
+            int stored = CountStoredItems();
+            _mgr.Notify("配置已写入文件，当前共 " + _mgr.Items.Count + " 个监控项" +
+                (stored == _mgr.Items.Count ? "" : " | 警告：文件里实际只有 " + stored + " 项，请检查写入路径/权限"));
         }
         private static void CopyTo(MonitorItem dst, MonitorItem src)
         {
@@ -1128,7 +1197,7 @@ namespace KeepAliveTool
 
         private void EditLoadSelected()
         {
-            if (_loadingEdit) return;
+            if (_loadingEdit || _syncingSel) return;   // 程序性恢复选中时不覆盖用户正在编辑的内容
             if (_grid.CurrentRow != null && _grid.CurrentRow.Tag is MonitorItem)
                 SelectItem((MonitorItem)_grid.CurrentRow.Tag);
         }
@@ -1162,17 +1231,22 @@ namespace KeepAliveTool
                 SyncRow(i);
             }
             _grid.ResumeLayout();
-            // 恢复选中
-            if (selTarget != null)
+            // 恢复选中（程序性：不触发右栏重载，避免覆盖正在输入的内容）
+            _syncingSel = true;
+            try
             {
-                foreach (DataGridViewRow row in _grid.Rows)
-                    if (row.Tag is MonitorItem && string.Equals(((MonitorItem)row.Tag).Target, selTarget, StringComparison.OrdinalIgnoreCase))
-                    {
-                        if (row.Cells.Count > 3) _grid.CurrentCell = row.Cells[3];
-                        break;
-                    }
+                if (selTarget != null)
+                {
+                    foreach (DataGridViewRow row in _grid.Rows)
+                        if (row.Tag is MonitorItem && string.Equals(((MonitorItem)row.Tag).Target, selTarget, StringComparison.OrdinalIgnoreCase))
+                        {
+                            if (row.Cells.Count > 3) _grid.CurrentCell = row.Cells[3];
+                            break;
+                        }
+                }
             }
-            _lblStatus.Text = "共 " + _mgr.Items.Count + " 个监控项";
+            finally { _syncingSel = false; }
+            _lblStatus.Text = CatUi("共 " + _mgr.Items.Count + " 个监控项");
         }
         private void SyncRow(int rowIndex)
         {
@@ -1183,7 +1257,7 @@ namespace KeepAliveTool
             row.Cells[C_HIDE].Value = it.StartHideWindow;
             row.Cells[C_MIN].Value = it.StartMinimized;
             row.Cells[C_BOOT].Value = it.StartOnBoot;
-            row.Cells[3].Value = StateOf(it);
+            row.Cells[3].Value = CatUi(StateOf(it));
             row.Cells[4].Value = it.DisplayName;
             row.Cells[5].Value = it.MatchText;
             row.Cells[6].Value = it.Restarts.ToString();
@@ -1231,6 +1305,37 @@ namespace KeepAliveTool
         }
 
         // ---------------- 保存/加载 ----------------
+        // 保存全部：先把右栏正在编辑的内容写回选中项，再落盘并给出明确反馈
+        private void ApplyAndSave()
+        {
+            if (_sel != null && !string.IsNullOrEmpty(_tTarget.Text.Trim()))
+            {
+                MonitorItem src = ReadEditFields();
+                CopyTo(_sel, src);
+                _mgr.Notify("已保存设置: " + _sel.DisplayName);
+                SaveAll();
+                RefreshList();
+                WriteEditFields(_sel);
+                if (_tray != null)
+                    _tray.ShowBalloonTip(1200, "Keep-Alive", Neko("设置已保存"), ToolTipIcon.Info);
+            }
+            else
+            {
+                SaveAll();
+                _mgr.Notify("没有可保存的监控项设置（先在列表添加监控，或点「+ 添加监控」新增）");
+            }
+        }
+
+        private int CountStoredItems()
+        {
+            try
+            {
+                if (!File.Exists(_cfgPath)) return 0;
+                return (new System.Text.RegularExpressions.Regex("item\\.begin")).Matches(File.ReadAllText(_cfgPath, Encoding.UTF8)).Count;
+            }
+            catch { return -1; }
+        }
+
         private void SaveAll()
         {
             _store.AutoStart = _chkAuto.Checked;
@@ -1239,6 +1344,8 @@ namespace KeepAliveTool
             _store.Items.Clear();
             foreach (MonitorItem it in _mgr.Items) _store.Items.Add(it);
             _store.Save(_cfgPath);
+            if (!string.IsNullOrEmpty(_store.LastError))
+                _mgr.Notify("保存配置文件失败: " + _store.LastError);
             ApplyAutoStart();
         }
         private void ApplyAutoStart()
@@ -1373,6 +1480,7 @@ namespace KeepAliveTool
             if (!_silent)
             {
                 RefreshList();
+                _mgr.Notify("启动加载：共 " + _mgr.Items.Count + " 个监控项");
                 if (_mgr.Items.Count > 0) SelectItem(_mgr.Items[0]);
                 // 把历史日志尾部载入
                 RefreshLogTail();
@@ -1472,6 +1580,7 @@ namespace KeepAliveTool
 
         public void Load(string path)
         {
+            LastError = "";
             try
             {
                 if (!File.Exists(path)) return;
@@ -1479,10 +1588,13 @@ namespace KeepAliveTool
                 MonitorItem cur = null;
                 foreach (string line in lines)
                 {
-                    int i = line.IndexOf('=');
+                    string tl = line.Trim();
+                    if (tl == "item.begin") { cur = new MonitorItem(); continue; }
+                    if (tl == "item.end") { if (cur != null) Items.Add(cur); cur = null; continue; }
+                    int i = tl.IndexOf('=');
                     if (i <= 0) continue;
-                    string k = line.Substring(0, i).Trim();
-                    string v = line.Substring(i + 1);
+                    string k = tl.Substring(0, i).Trim();
+                    string v = tl.Substring(i + 1);
                     if (k == "AutoStart") { bool b; AutoStart = bool.TryParse(v, out b) && b; }
                     else if (k == "StartHidden") { bool b; StartHidden = bool.TryParse(v, out b) && b; }
                     else if (k == "NekoMode") { bool b; NekoMode = bool.TryParse(v, out b) && b; }
@@ -1507,11 +1619,14 @@ namespace KeepAliveTool
                     }
                 }
             }
-            catch { }
+            catch (Exception ex) { LastError = ex.ToString(); }
         }
+
+        public string LastError = "";
 
         public void Save(string path)
         {
+            LastError = "";
             try
             {
                 StringBuilder sb = new StringBuilder();
@@ -1540,7 +1655,7 @@ namespace KeepAliveTool
                 }
                 File.WriteAllText(path, sb.ToString(), new UTF8Encoding(false));
             }
-            catch { }
+            catch (Exception ex) { LastError = ex.Message; }
         }
     }
 }
