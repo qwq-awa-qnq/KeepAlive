@@ -1,5 +1,7 @@
 # Keep-Alive 保活看门狗
 
+![界面预览](screenshot.png)
+
 Windows 进程保活工具（WinForms / .NET Framework 4.x，Win7 SP1+ 可用）。
 目标进程退出后自动拉起；防重启风暴；日志留痕；可按监控项选择「隐藏到托盘 / 最小化 / 开机自启自动检测」；托盘兜底图标可唤回被隐藏窗口；可结束目标进程。
 
